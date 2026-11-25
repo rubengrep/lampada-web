@@ -1,3 +1,4 @@
+# Lampada web: release automatiche.
 # Una release di Lampada web per ogni versione di Lampada, con lo stesso numero: il plugin scarica
 # releases/download/<versione>/lampada.html (src/web.js di Lampada). Parte dallo script di release di Lampada
 # e, se quello non ce la fa, dal controllo ogni 3 ore. A mano: "force" rifà la pagina della versione già pubblicata
