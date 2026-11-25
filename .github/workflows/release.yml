@@ -1,0 +1,49 @@
+# Una release di Lampada web per ogni versione di Lampada, con lo stesso numero: il plugin scarica
+# releases/download/<versione>/lampada.html (src/web.js di Lampada). Parte dallo script di release di Lampada
+# e, se quello non ce la fa, dal controllo ogni 3 ore. A mano: "force" rifà la pagina della versione già pubblicata
+# (per una correzione solo del lato web).
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rifai la pagina anche se la release c'è già
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 */3 * * *'
+permissions:
+  contents: write
+concurrency: release
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Ultima versione di Lampada
+        id: v
+        run: |
+          tag=$(gh release view -R rubengrep/lampada --json tagName -q .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then echo "exists=1" >> "$GITHUB_OUTPUT"; fi
+      - name: Build
+        if: steps.v.outputs.exists != '1' || inputs.force
+        env:
+          LAMPADA_TAG: ${{ steps.v.outputs.tag }}
+        run: node scripts/build.js
+      - name: Pubblica
+        if: steps.v.outputs.exists != '1' || inputs.force
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          if [ "${{ steps.v.outputs.exists }}" = 1 ]; then
+            gh release upload "$TAG" dist/lampada.html --clobber
+          else
+            gh release create "$TAG" dist/lampada.html --title "Lampada web $TAG" \
+              --notes "Lampada $TAG in una pagina HTML. Scarica lampada.html e aprilo in Edge o Chrome (vedi il README). Con Lampada in Obsidian, Impostazioni → Lampada web lo mette nel vault e lo aggiorna da solo."
+          fi

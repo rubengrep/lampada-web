@@ -1,0 +1,17 @@
+{
+  "name": "lampada-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lampada web viewer: il plugin Lampada in una pagina HTML, per i computer dove non si può installare Obsidian.",
+  "lampada": "0.23.0",
+  "buildDeps": {
+    "esbuild": "0.28.2",
+    "marked": "17.0.6",
+    "yaml": "2.9.1",
+    "lucide-static": "1.70.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "prova": "node scripts/server-prova.js"
+  }
+}
