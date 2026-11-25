@@ -21,6 +21,7 @@ La pagina legge soltanto: non scrive e non manda niente a nessuno, parla solo co
 <label>ID dell'app (client ID) registrata su Microsoft:<br><input id="client" placeholder="00000000-0000-0000-0000-000000000000"></label>
 <button id="go">Entra con l'account Microsoft personale</button>
 <ul id="out"></ul>
+<div id="pick" hidden></div>
 <p class="muted">Indirizzo da registrare come «Applicazione a pagina singola»: <code id="uri"></code></p>
 <script>
 const AUTH = 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
@@ -55,23 +56,47 @@ async function graph(token, path) {
 async function probe(token) {
   const me = await graph(token, '/me/drive');
   log(true, `Entrato: OneDrive ${me.driveType === 'personal' ? 'personale' : me.driveType}, ${(me.quota.used / 1e9).toFixed(1)} GB usati`);
-  let apps;
+  picker(token, store.get('lampada-path') || '');
+}
+
+/** Sfoglia le cartelle di OneDrive e fa scegliere quella del vault (ricordata per la volta dopo). */
+async function picker(token, path) {
+  const box = document.getElementById('pick');
+  box.hidden = false;
+  box.innerHTML = '';
+  const where = path ? `/me/drive/root:/${path.split('/').map(encodeURIComponent).join('/')}:` : '/me/drive/root';
+  let list;
   try {
-    apps = await graph(token, '/me/drive/root:/Apps:/children?$top=200');
+    list = await graph(token, `${where}/children?$top=500&$select=id,name,folder,file,size`);
   } catch (e) {
-    return log(false, 'Nessuna cartella «Apps» (o «App»): Remotely Save non ha ancora caricato niente qui.');
+    return path ? picker(token, '') : log(false, `Cartelle non lette: ${e.message}`);
   }
-  log(true, `Cartella Apps: ${apps.value.map((x) => x.name).join(', ') || '(vuota)'}`);
-  const rs = apps.value.find((x) => /remotely/i.test(x.name));
-  if (!rs) return log(false, 'Nessuna cartella di Remotely Save dentro Apps.');
-  const vaults = await graph(token, `/me/drive/items/${rs.id}/children?$top=200`);
-  log(true, `Dentro «${rs.name}»: ${vaults.value.map((x) => x.name).join(', ') || '(vuota)'}`);
-  const v = vaults.value.find((x) => x.folder);
-  if (!v) return;
-  const top = await graph(token, `/me/drive/items/${v.id}/children?$top=200`);
-  log(true, `Vault «${v.name}»: ${top.value.map((x) => x.name).join(', ')}`);
-  log(top.value.some((x) => x.name === '.lampada'), '.lampada (Bibbia e pubblicazioni) ' + (top.value.some((x) => x.name === '.lampada') ? 'c’è' : 'non c’è: Remotely Save salta le cartelle col punto'));
-  const file = top.value.find((x) => x.file && x.size < 5e6);
+  const head = box.appendChild(document.createElement('p'));
+  head.innerHTML = '<b>Scegli la cartella del vault</b> (quella con dentro .obsidian):<br>';
+  head.appendChild(document.createTextNode(`OneDrive / ${path.split('/').filter(Boolean).join(' / ')}`));
+  const ul = box.appendChild(document.createElement('ul'));
+  const row = (text, fn) => {
+    const b = ul.appendChild(document.createElement('li')).appendChild(document.createElement('a'));
+    b.href = '#';
+    b.textContent = text;
+    b.onclick = (e) => (e.preventDefault(), fn());
+  };
+  if (path) row('⬑ cartella sopra', () => picker(token, path.split('/').slice(0, -1).join('/')));
+  for (const f of list.value.filter((x) => x.folder).sort((a, b) => a.name.localeCompare(b.name))) row(`📁 ${f.name}`, () => picker(token, path ? `${path}/${f.name}` : f.name));
+  const ok = box.appendChild(document.createElement('button'));
+  ok.textContent = 'Questa è la cartella del vault';
+  ok.onclick = () => {
+    store.set('lampada-path', path);
+    box.hidden = true;
+    check(token, path, list.value);
+  };
+}
+
+async function check(token, path, top) {
+  log(true, `Vault «${path || 'OneDrive'}»: ${top.map((x) => x.name).join(', ')}`);
+  log(top.some((x) => x.name === '.obsidian'), '.obsidian (impostazioni e dati di Lampada) ' + (top.some((x) => x.name === '.obsidian') ? 'c’è' : 'non c’è'));
+  log(top.some((x) => x.name === '.lampada'), '.lampada (Bibbia e pubblicazioni) ' + (top.some((x) => x.name === '.lampada') ? 'c’è' : 'non c’è: con Remotely Save è normale, salta le cartelle col punto'));
+  const file = top.find((x) => x.file && x.size < 5e6);
   if (file) {
     try {
       const r = await fetch(`${GRAPH}/me/drive/items/${file.id}/content`, { headers: { Authorization: `Bearer ${token}` } });
