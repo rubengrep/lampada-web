@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prova OneDrive</title>
+<style>
+  :root { --bg: #ffffff; --fg: #222222; --muted: #666666; --accent: #8a5cf5; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1e1e1e; --fg: #dadada; --muted: #a0a0a0; } }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 24px auto; max-width: 720px; padding: 0 16px; background: var(--bg); color: var(--fg); }
+  input { font: inherit; width: 100%; padding: 6px 8px; box-sizing: border-box; }
+  button { font: inherit; padding: 8px 14px; margin-top: 8px; background: var(--accent); color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+  li { margin: 4px 0; word-break: break-word; }
+  .muted { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Prova OneDrive</h1>
+<p>Controlla se da questo computer una pagina web può entrare nel tuo OneDrive <b>personale</b> e leggere il vault.
+La pagina legge soltanto: non scrive e non manda niente a nessuno, parla solo con Microsoft.</p>
+<label>ID dell'app (client ID) registrata su Microsoft:<br><input id="client" placeholder="00000000-0000-0000-0000-000000000000"></label>
+<button id="go">Entra con l'account Microsoft personale</button>
+<ul id="out"></ul>
+<p class="muted">Indirizzo da registrare come «Applicazione a pagina singola»: <code id="uri"></code></p>
+<script>
+const AUTH = 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+const SCOPE = 'Files.Read User.Read';
+const redirect = location.origin + location.pathname;
+const out = document.getElementById('out');
+const client = document.getElementById('client');
+document.getElementById('uri').textContent = redirect;
+const log = (ok, msg) => out.insertAdjacentHTML('beforeend', `<li>${ok ? '✅' : '❌'} ${msg.replace(/</g, '&lt;')}</li>`);
+const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+client.value = store.get('lampada-client') || '';
+
+document.getElementById('go').onclick = async () => {
+  const id = client.value.trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return log(false, 'Scrivi prima l’ID dell’app (36 caratteri).');
+  store.set('lampada-client', id);
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+  sessionStorage.setItem('lampada-verifier', verifier);
+  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  const q = new URLSearchParams({ client_id: id, response_type: 'code', redirect_uri: redirect, scope: SCOPE, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account' });
+  location.href = `${AUTH}/authorize?${q}`;
+};
+
+async function graph(token, path) {
+  const r = await fetch(GRAPH + path, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+  return r.json();
+}
+
+async function probe(token) {
+  const me = await graph(token, '/me/drive');
+  log(true, `Entrato: OneDrive ${me.driveType === 'personal' ? 'personale' : me.driveType}, ${(me.quota.used / 1e9).toFixed(1)} GB usati`);
+  let apps;
+  try {
+    apps = await graph(token, '/me/drive/root:/Apps:/children?$top=200');
+  } catch (e) {
+    return log(false, 'Nessuna cartella «Apps» (o «App»): Remotely Save non ha ancora caricato niente qui.');
+  }
+  log(true, `Cartella Apps: ${apps.value.map((x) => x.name).join(', ') || '(vuota)'}`);
+  const rs = apps.value.find((x) => /remotely/i.test(x.name));
+  if (!rs) return log(false, 'Nessuna cartella di Remotely Save dentro Apps.');
+  const vaults = await graph(token, `/me/drive/items/${rs.id}/children?$top=200`);
+  log(true, `Dentro «${rs.name}»: ${vaults.value.map((x) => x.name).join(', ') || '(vuota)'}`);
+  const v = vaults.value.find((x) => x.folder);
+  if (!v) return;
+  const top = await graph(token, `/me/drive/items/${v.id}/children?$top=200`);
+  log(true, `Vault «${v.name}»: ${top.value.map((x) => x.name).join(', ')}`);
+  log(top.value.some((x) => x.name === '.lampada'), '.lampada (Bibbia e pubblicazioni) ' + (top.value.some((x) => x.name === '.lampada') ? 'c’è' : 'non c’è: Remotely Save salta le cartelle col punto'));
+  const file = top.value.find((x) => x.file && x.size < 5e6);
+  if (file) {
+    try {
+      const r = await fetch(`${GRAPH}/me/drive/items/${file.id}/content`, { headers: { Authorization: `Bearer ${token}` } });
+      log(r.ok, `Lettura di un file («${file.name}», ${file.size} byte): risposta ${r.status}`);
+    } catch (e) {
+      log(false, `Lettura di un file bloccata: ${e.message}`);
+    }
+  }
+}
+
+(async () => {
+  const p = new URLSearchParams(location.search);
+  if (p.get('error')) return log(false, `Microsoft: ${p.get('error_description') || p.get('error')}`);
+  const code = p.get('code');
+  if (!code) return;
+  history.replaceState(null, '', redirect);
+  try {
+    const body = new URLSearchParams({ client_id: store.get('lampada-client'), grant_type: 'authorization_code', code, redirect_uri: redirect, code_verifier: sessionStorage.getItem('lampada-verifier'), scope: SCOPE });
+    const r = await fetch(`${AUTH}/token`, { method: 'POST', body });
+    const j = await r.json();
+    if (!j.access_token) return log(false, `Accesso non riuscito: ${j.error_description || j.error}`);
+    await probe(j.access_token);
+  } catch (e) {
+    log(false, `Bloccato: ${e.message}`);
+  }
+})();
+</script>
+</body>
+</html>
